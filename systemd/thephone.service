@@ -1,0 +1,11 @@
+[Unit]
+Description=The Phone
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/home/op/thephone
+Restart=on-abort
+
+[Install]
+WantedBy=multi-user.target
