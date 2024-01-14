@@ -87,6 +87,7 @@ func main() {
 
 	// main loop to keep things running
 	for {
+		time.Sleep(time.Millisecond * 100)
 		if debug {
 			time.Sleep(time.Second * 1)
 			printStatus()
