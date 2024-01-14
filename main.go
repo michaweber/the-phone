@@ -1,14 +1,13 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"time"
 
-	"github.com/ebitengine/oto/v3"
-	"github.com/hajimehoshi/go-mp3"
+	"github.com/michaweber/thephone/config"
 	"github.com/warthog618/gpiod"
 	"github.com/warthog618/gpiod/device/rpi"
 )
@@ -39,135 +38,88 @@ import (
  *    GND (39) (40) GPIO21
  */
 
-var (
-	isPhonePickedUp      bool
-	isResetButtonPressed bool
-	isDialing            bool
-	currentNumber        int
-	dialedNumber         string
+const (
+	callingTimer = 2
+	path         = "/home/op/sounds/"
 )
 
-func main() {
+var (
+	// indicates if handle is picked up or now
+	isPhonePickedUp bool = false
+	// the reset button to the left of the dial wheel
+	isResetButtonPressed bool = false
+	// true as long as the dial wheel is turning
+	isDialing bool = false
+	// the current digit which is dialing
+	currentDigit int = 0
+	// combination of all dialed digits
+	dialedNumber string = ""
+	// a timer to start the "phone call" 2 seconds after the last dialed digit
+	dialTimer *time.Timer
+	// flag to indicate if a "call" is currently active
+	isCalling bool = false
+	// little debug flag
+	debug bool = false
+)
 
+/*
+ * The main function...
+ */
+func main() {
+	// print the banner, just because we can
 	printBanner()
 
-	/*
-	 *
-	 */
-	fmt.Println("initializing number dial")
-	numberDialLine, err := requestLine(rpi.J8p10, dialingHandler)
-	if err != nil {
-		fmt.Println("Unable to initialize number dial: %s\n", err)
-		os.Exit(1)
-	}
+	// initialize number dial
+	numberDialLine := initializeNumberDial()
 	defer numberDialLine.Close()
 
-	/*
-	 * Initializing Dialwheel
-	 */
-	fmt.Println("initializing dialing active")
-	dialingActive, err := requestLine(rpi.J8p8, dialingActiveHandler)
-	if err != nil {
-		fmt.Printf("Unable to initialize dialing active: %s\n", err)
-		os.Exit(1)
-	}
+	// initialize dial wheel
+	dialingActive := initializeDialingActive()
 	defer dialingActive.Close()
 
-	/*
-	 * Initializing Reset Button
-	 */
-	fmt.Println("initializing reset button")
-	resetButtonLine, err := requestLine(rpi.J8p22, resetButtonHandler)
-	if err != nil {
-		fmt.Printf("Unable to initialize reset button: %s\n", err)
-		os.Exit(1)
-	}
+	// initialize reset button
+	resetButtonLine := initializeResetButton()
 	defer resetButtonLine.Close()
 
-	/*
-	 * Initializing Headset Hook
-	 */
-	fmt.Println("initializing headset hook..")
-	headsetHookLine, err := requestLine(rpi.J8p16, headsetHookHandler)
-	if err != nil {
-		fmt.Printf("Unable to initialize headset hook: %s\n", err)
-		os.Exit(1)
-	}
+	// initialize headset hook
+	headsetHookLine := initializeHeadsetHook()
 	defer headsetHookLine.Close()
 
-	// Read the mp3 file into memory
-	fileBytes, err := os.ReadFile("./my-file.mp3")
-	if err != nil {
-		panic("reading my-file.mp3 failed: " + err.Error())
-	}
-
-	// Convert the pure bytes into a reader object that can be used with the mp3 decoder
-	fileBytesReader := bytes.NewReader(fileBytes)
-
-	// Decode file
-	decodedMp3, err := mp3.NewDecoder(fileBytesReader)
-	if err != nil {
-		panic("mp3.NewDecoder failed: " + err.Error())
-	}
-
-	// Prepare an Oto context (this will use your default audio device) that will
-	// play all our sounds. Its configuration can't be changed later.
-
-	op := &oto.NewContextOptions{}
-
-	// Usually 44100 or 48000. Other values might cause distortions in Oto
-	op.SampleRate = 44100
-
-	// Number of channels (aka locations) to play sounds from. Either 1 or 2.
-	// 1 is mono sound, and 2 is stereo (most speakers are stereo).
-	op.ChannelCount = 2
-
-	// Format of the source. go-mp3's format is signed 16bit integers.
-	op.Format = oto.FormatSignedInt16LE
-
-	// Remember that you should **not** create more than one context
-	otoCtx, readyChan, err := oto.NewContext(op)
-	if err != nil {
-		panic("oto.NewContext failed: " + err.Error())
-	}
-	// It might take a bit for the hardware audio devices to be ready, so we wait on the channel.
-	<-readyChan
-
-	// Create a new 'player' that will handle our sound. Paused by default.
-	player := otoCtx.NewPlayer(decodedMp3)
-
-	// Play starts playing the sound and returns without waiting for it (Play() is async).
-	player.Play()
-
-	// We can wait for the sound to finish playing using something like this
-	for player.IsPlaying() {
-		time.Sleep(time.Millisecond)
-	}
-
-	// Now that the sound finished playing, we can restart from the beginning (or go to any location in the sound) using seek
-	// newPos, err := player.(io.Seeker).Seek(0, io.SeekStart)
-	// if err != nil{
-	//     panic("player.Seek failed: " + err.Error())
-	// }
-	// println("Player is now at position:", newPos)
-	// player.Play()
-
-	// If you don't want the player/sound anymore simply close
-	err = player.Close()
-	if err != nil {
-		panic("player.Close failed: " + err.Error())
-	}
-
-	/*
-	 * Main Loop to keep things running
-	 */
+	// main loop to keep things running
 	for {
-		time.Sleep(time.Second / 2)
-		printStatus()
+		if debug {
+			time.Sleep(time.Second * 1)
+			printStatus()
+		}
 	}
 
 }
 
+/*
+ * callNumberHandler is the main handler for the actual "call"
+ * It receives the dialed number after the dialing timer has finished
+ * and decides which action to take
+ */
+func callNumberHandler(number string) {
+	printInfo(fmt.Sprintf("dialing number: %v", number))
+	stopDialTone()
+	isCalling = true
+	switch number {
+	case "1":
+		play("connect.mp3")
+	case "2":
+		play("dialup.mp3")
+	case "001":
+		toggleDebugFlag()
+	default:
+		play("number-not-working.mp3")
+	}
+	reset()
+}
+
+/*
+ * requestLine sets up the provided gpio pin to receive the signals
+ */
 func requestLine(offset int, e gpiod.EventHandler) (*gpiod.Line, error) {
 	debouncePeriod := 10 * time.Millisecond
 	return gpiod.RequestLine("gpiochip0", offset,
@@ -175,9 +127,87 @@ func requestLine(offset int, e gpiod.EventHandler) (*gpiod.Line, error) {
 		gpiod.WithBothEdges,
 		gpiod.WithDebounce(debouncePeriod),
 		gpiod.WithEventHandler(e))
-
 }
 
+/*
+ * initializeHeadsetHook initializes the gpio pins connected to the headset
+ */
+func initializeHeadsetHook() *gpiod.Line {
+	printInfo("initializing headset hook..")
+	headsetHookLine, err := requestLine(rpi.J8p16, headsetHookHandler)
+	if err != nil {
+		printError("Unable to initialize headset hook", err)
+		os.Exit(1)
+	}
+	return headsetHookLine
+}
+
+/*
+ * initializeResetButton initializes the gpiod pins connected to the button
+ */
+func initializeResetButton() *gpiod.Line {
+	printInfo("initializing reset button")
+	resetButtonLine, err := requestLine(rpi.J8p22, resetButtonHandler)
+	if err != nil {
+		printError("Unable to initialize reset button", err)
+		os.Exit(1)
+	}
+	return resetButtonLine
+}
+
+/*
+ * initializingDialingActive initializes the gpiod pins which indicate that
+ * the dial wheel is active
+ */
+func initializeDialingActive() *gpiod.Line {
+	printInfo("initializing dialing active")
+	dialingActive, err := requestLine(rpi.J8p8, dialingActiveHandler)
+	if err != nil {
+		printError("Unable to initialize dialing active", err)
+		os.Exit(1)
+	}
+	return dialingActive
+}
+
+func initializeNumberDial() *gpiod.Line {
+	printInfo("initializing number dial")
+	numberDialLine, err := requestLine(rpi.J8p10, dialingHandler)
+	if err != nil {
+		printError("Unable to initialize number dial", err)
+		os.Exit(1)
+	}
+	return numberDialLine
+}
+
+/*
+ * toggles the debug flag
+ */
+func toggleDebugFlag() {
+	if !debug {
+		debug = true
+	} else {
+		debug = false
+	}
+}
+
+/*
+ * printStatus prints the statusline if debug is true
+ */
+func printStatus() {
+	printInfo(fmt.Sprintf(
+		"PickedUp: %v, Dialing: %v, ResetPressed: %v, Digit: %v, Dialed: %v",
+		getValue(isPhonePickedUp),
+		getValue(isDialing),
+		getValue(isResetButtonPressed),
+		currentDigit,
+		dialedNumber,
+	))
+}
+
+/*
+ * getValue is a small helper to translate bool into "N" and "Y" for the
+ * print status line
+ */
 func getValue(v bool) string {
 	result := "N"
 	if v {
@@ -186,70 +216,186 @@ func getValue(v bool) string {
 	return result
 }
 
-func printStatus() {
-	fmt.Printf(
-		"PickedUp: %v, Dialing: %v, ResetPressed: %v, Number: %v, Dialed: %v \n",
-		getValue(isPhonePickedUp),
-		getValue(isDialing),
-		getValue(isResetButtonPressed),
-		currentNumber,
-		dialedNumber,
-	)
+/*
+ * small helper to print some logging messages
+ */
+func printInfo(msg string) {
+	fmt.Printf("INFO: %v \n", msg)
+}
+
+/*
+ * small helper to print some logging error message
+ */
+func printError(msg string, err error) {
+	fmt.Printf("ERR: %v: %s \n", msg, err)
+}
+
+/*
+ * startDialingTimer provides a timer to wait the number of seconds dedined in
+ * callingTimer after the last digit was dialed.
+ * If the timer is finised, it invoces the callNumberHandler with the currently
+ * dialed number.
+ */
+func startDialingTimer(number string) {
+	stopDialingTimer()
+	printInfo("starting Timer...")
+	dialTimer = time.NewTimer(callingTimer * time.Second)
+	go func() {
+		<-dialTimer.C
+		callNumberHandler(number)
+	}()
+}
+
+/*
+ * stopDialingTimer stops the timer is its running
+ */
+func stopDialingTimer() {
+	if dialTimer != nil {
+		printInfo("stoping timer")
+		dialTimer.Stop()
+	}
 
 }
 
-func setCurrentNumber() {
-	currentNumber += 1
-	if currentNumber == 10 {
-		currentNumber = 0
+/*
+ * play calls mpg123 with the provided sound file
+ */
+func play(file string) {
+	cmd := exec.Command("mpg123", path+file)
+	if err := cmd.Start(); err != nil {
+		printError("Unable to play file", err)
+	}
+	cmd.Wait()
+}
+
+/*
+ * setCurrentDigit counts up the current Digit every time it's called,
+ * if the counter reaches 10, then the 0 was dialed
+ */
+func setCurrentDigit() {
+	currentDigit += 1
+	if currentDigit == 10 {
+		currentDigit = 0
 	}
 }
 
-func dialingHandler(evt gpiod.LineEvent) {
-	switch evt.Type {
-	case gpiod.LineEventFallingEdge:
-	case gpiod.LineEventRisingEdge:
-		setCurrentNumber()
-	default:
-	}
-
+/*
+ * resetCurrentDigit resets the currently dialed digit to 0
+ */
+func resetCurrentDigit() {
+	currentDigit = 0
 }
 
-func dialingActiveHandler(evt gpiod.LineEvent) {
-	switch evt.Type {
-	case gpiod.LineEventFallingEdge:
-		isDialing = true
-		currentNumber = 0
-	case gpiod.LineEventRisingEdge:
-		isDialing = false
-		dialedNumber += strconv.Itoa(currentNumber)
-	default:
+/*
+ * resetNumber resets the dialed number back to an empty string
+ */
+func resetNumber() {
+	dialedNumber = ""
+}
+
+/*
+ * reset sets all phone constants back ot their intial value
+ */
+func reset() {
+	stopDialTone()
+	isCalling = false
+
+	stopDialingTimer()
+	resetNumber()
+	resetCurrentDigit()
+
+	if isPhonePickedUp {
+		startDialTone()
 	}
 }
 
+/*
+ * starts the dial tone
+ */
+func startDialTone() {
+	printInfo("starting dial tone...")
+	cmd := exec.Command(path + "freizeichen.sh")
+	if err := cmd.Start(); err != nil {
+		printError("Unable to play", err)
+	}
+}
+
+/*
+ * stopDialTone stops the dial tone sound, currently this means killing all
+ * running mpg123 processes
+ */
+func stopDialTone() {
+	cmd := "ps -aux|grep mpg123|grep -v grep"
+	_, err := exec.Command("bash", "-c", cmd).Output()
+	if err == nil {
+		printInfo("stoping dial tone")
+		exec.Command("killall", "mpg123").Output()
+	}
+}
+
+/*
+ * resetButtonHandler receives the signal if the reset button is pressed and
+ * sets the isResetButtonPressed flag and resets the phone if pressed
+ */
 func resetButtonHandler(evt gpiod.LineEvent) {
 	switch evt.Type {
 	case gpiod.LineEventFallingEdge:
 		isResetButtonPressed = true
-		dialedNumber = ""
+		if isPhonePickedUp {
+			reset()
+		}
 	case gpiod.LineEventRisingEdge:
 		isResetButtonPressed = false
 	default:
 	}
 }
 
-func startDialTone() {}
-func stopDialTone()  {}
+/*
+ * dialingHandler receives a signal every time a number is passed
+ * by the dial wheel and calls setCurrentDigit to count the signals
+ */
+func dialingHandler(evt gpiod.LineEvent) {
+	switch evt.Type {
+	case gpiod.LineEventFallingEdge:
+	case gpiod.LineEventRisingEdge:
+		setCurrentDigit()
+	default:
+	}
 
+}
+
+/*
+ * dialingActiveHandler receives a signal as long as the dial wheel is active
+ */
+func dialingActiveHandler(evt gpiod.LineEvent) {
+	switch evt.Type {
+	case gpiod.LineEventFallingEdge:
+		isDialing = true
+		stopDialingTimer()
+		resetCurrentDigit()
+
+	case gpiod.LineEventRisingEdge:
+		isDialing = false
+		if isPhonePickedUp && !isCalling {
+			dialedNumber += strconv.Itoa(currentDigit)
+			startDialingTimer(dialedNumber)
+		}
+	default:
+	}
+}
+
+/*
+ * headsetHookHandler receives a signal if the headset is picked up
+ */
 func headsetHookHandler(evt gpiod.LineEvent) {
 	switch evt.Type {
 	case gpiod.LineEventFallingEdge:
 		isPhonePickedUp = true
-		startDialTone()
 	case gpiod.LineEventRisingEdge:
 		isPhonePickedUp = false
 	default:
 	}
+	reset()
 }
 
 func printBanner() {
@@ -265,50 +411,6 @@ func printBanner() {
 	fmt.Println("                                  ░███                                             ")
 	fmt.Println("                                  █████                                            ")
 	fmt.Println("                                 ░░░░░                                             ")
-
+	fmt.Printf(" \x1b[1;37mVersion:\x1b[0m %s_%s\n", config.Env, config.Version)
+	fmt.Printf(" \x1b[1;37mBuildtime:\x1b[0m %s\n", config.Build)
 }
-
-/*
-
-To implement a countdown event handler in Go, you can use goroutines and channels. Here's an example:
-
-```go
-package main
-
-import (
-	"fmt"
-	"time"
-)
-
-func countdown(count int, done chan bool) {
-	for i := count; i > 0; i-- {
-		fmt.Println(i)
-		time.Sleep(time.Second)
-	}
-
-	done <- true
-}
-
-func main() {
-	done := make(chan bool)
-
-	go countdown(10, done)
-
-	// Wait for the countdown to finish
-	<-done
-
-	fmt.Println("Countdown finished!")
-}
-```
-
-In the above code, we define a `countdown` function that takes a starting count and a channel called `done`. It iterates from the starting count down to 1, printing the current count and sleeping for one second between each iteration.
-
-Once the countdown is finished, it sends a value of `true` to the `done` channel to indicate that it's done.
-
-In the `main` function, we create the `done` channel and start the countdown in a goroutine by calling `go countdown(10, done)`. This allows the countdown to run concurrently with the rest of the program.
-
-Finally, we wait for the countdown to finish by reading from the `done` channel (`<-done`). Once we receive a value from the channel, we print "Countdown finished!".
-
-You can modify the `countdown` function and the main logic according to your specific requirements.
-
-*/

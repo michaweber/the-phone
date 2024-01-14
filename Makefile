@@ -1,12 +1,20 @@
+BUILD_DATE=`date -u +%Y%m%d%H%M%S`
+BRANCH=`git rev-parse --abbrev-ref HEAD`
+VERSION=`git describe --tags`
+
 BUILDFLAGS = --ldflags "-X github.com/michaweber/thephone/config.Version=$(VERSION) -X github.com/michaweber/thephone/config.Env=$(BRANCH) -X github.com/michaweber/thephone/config.Build=$(BUILD_DATE)"
 build:
-	env CGO_ENABLED=1 GOOS=linux GOARCH=arm GOARM=6 go build -v -o bin/thephone $(BUILDFLAGS) 
+	env GOOS=linux GOARCH=arm GOARM=6 go build -v -o bin/thephone $(BUILDFLAGS) 
 
 copy: 
 	scp bin/thephone home-phone:thephone
 
 deploy: build service-stop copy service-start
 	echo "Done"
+
+copy-sounds: 
+	ssh home-phone "rm -r sounds/; mkdir -p sounds"
+	scp -r sounds/ home-phone:
 
 test:
 	ssh home-phone -t './thephone'
