@@ -111,6 +111,8 @@ func callNumberHandler(number string) {
 		play("dialup.mp3")
 	case "001":
 		toggleDebugFlag()
+	case "00424352968":
+		play("hint.mp3")
 	default:
 		play("number-not-working.mp3")
 	}
