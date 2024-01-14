@@ -19,8 +19,12 @@ copy-sounds:
 test:
 	ssh home-phone -t './thephone'
 
+clear-service:
+	ssh home-phone "sudo systemctl disable thephone.service && sudo rm /lib/systemd/system/thephone.service"
+	ssh home-phone "sudo systemctl daemon-reload"
+
 install-service:
-	cat systemd/thephone.service | ssh home-phone "sudo tee -a /lib/systemd/system/thephone.service"
+	cat systemd/thephone.service | ssh home-phone "sudo tee /lib/systemd/system/thephone.service"
 	ssh home-phone "sudo chmod 644 /lib/systemd/system/thephone.service"
 	ssh home-phone "sudo systemctl daemon-reload"
 	ssh home-phone "sudo systemctl enable thephone.service"
